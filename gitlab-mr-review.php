@@ -2,9 +2,10 @@
 declare(strict_types=1);
 
 /**
- * GitLab MR -> DeepSeek review.
+ * GitLab MR -> LLM review (по умолчанию DeepSeek).
  *
- * Ловит вебхук "Merge request events" и запускает ревью в DeepSeek, когда:
+ * Ловит вебхук "Merge request events" и запускает ревью в выбранного
+ * провайдера LLM, когда:
  *   - MR создан и он НЕ черновик (action=open, draft=false);
  *   - в MR добавлены коммиты (action=update, object_attributes.oldrev заполнен);
  *   - MR перестал быть черновиком (снят Draft:/WIP:/флаг draft).
@@ -17,16 +18,40 @@ declare(strict_types=1);
  * Webhook: Settings -> Webhooks -> URL на этот файл, Trigger = "Merge request events",
  * Signing token = секрет в webhook_signing_token.
  *
+ * Провайдер задаётся парой настроек 'ai_provider' (имя) + 'providers' (реестр).
+ * Из коробки настроен только DeepSeek, но добавить любой OpenAI-совместимый
+ * API (OpenAI, OpenRouter, Ollama, vLLM, свой шлюз) можно одной записью
+ * в config.php, без правки кода.
+ *
  * CLI:
  *   php gitlab-mr-review.php --project=42 --mr=17       принудительное ревью
+ *   php gitlab-mr-review.php --project=42 --mr=17 --provider=openai
  *   php gitlab-mr-review.php --payload=f.json --dry-run  проверить решение, без сети
+ *   php gitlab-mr-review.php --list-providers            показать провайдеров
  *   php gitlab-mr-review.php --help
  */
 
 // ================================ CONFIG ================================
 
 $CONFIG = [
-    // DeepSeek (https://platform.deepseek.com)
+    // ============================ LLM ============================
+    // Кто делает ревью: имя записи из 'providers' ниже.
+    'ai_provider' => (string) (getenv('AI_PROVIDER') ?: 'deepseek'),
+
+    // Реестр провайдеров: 'имя' => параметры.
+    //   driver   — протокол запроса; сейчас реализован 'openai_compatible'
+    //              (POST {base_url}/chat/completions). Ему соответствуют
+    //              DeepSeek, OpenAI, OpenRouter, Ollama, vLLM и т.п.
+    //   label    — как провайдер называется в комментарии MR.
+    //   api_key  — токен; пустой допустим при 'require_api_key' => false.
+    //   model, max_tokens, timeout, temperature — параметры запроса.
+    // Встроенный DeepSeek добавляется в default_providers(); здесь описываются
+    // только дополнительные провайдеры (см. config.example.php).
+    'providers' => [],
+
+    // Устаревший формат: эти ключи продолжают работать и подставляются
+    // в providers.deepseek, если там поле не задано. В новом конфиге
+    // используйте 'providers'.
     'deepseek_api_key' => (string) (getenv('DEEPSEEK_API_KEY') ?: ''),
     'deepseek_base_url' => (string) (getenv('DEEPSEEK_BASE_URL') ?: 'https://api.deepseek.com'),
     'deepseek_model' => (string) (getenv('DEEPSEEK_MODEL') ?: 'deepseek-chat'),
@@ -45,6 +70,8 @@ $CONFIG = [
     // Поведение
     'require_description' => true,   // без описания ревью не запускать
     'post_note' => true,             // публиковать результат в MR
+    // Маркер не зависит от провайдера: при смене модели тот же комментарий
+    // обновится, а не продублируется.
     'note_marker' => '<!-- deepseek-review -->',
 
     // Бюджет на diff (символы, не токены)
@@ -65,6 +92,10 @@ if (is_file($configFile)) {
         $CONFIG = array_merge($CONFIG, $override);
     }
 }
+
+$CONFIG['ai_provider'] = trim((string) $CONFIG['ai_provider']) ?: 'deepseek';
+// Реестр провайдеров: встроенный DeepSeek + всё, что добавлено в config.php.
+$CONFIG['providers'] = resolve_providers($CONFIG);
 
 // ================================ HELPERS ===============================
 
@@ -509,21 +540,190 @@ TXT;
     return [$system, implode("\n", $lines)];
 }
 
-function ask_deepseek(array $cfg, string $system, string $user): string
+/**
+ * Встроенные провайдеры. Пока настроен только DeepSeek: остальные
+ * добавляются в config.php через 'providers', без изменения кода.
+ *
+ * @return array<string, array<string, mixed>>
+ */
+function default_providers(): array
 {
-    if ((string) $cfg['deepseek_api_key'] === '') {
-        throw new RuntimeException('deepseek_api_key не задан');
+    return [
+        'deepseek' => [
+            'driver' => 'openai_compatible',
+            'label' => 'DeepSeek',
+            'api_key' => (string) (getenv('DEEPSEEK_API_KEY') ?: ''),
+            'base_url' => (string) (getenv('DEEPSEEK_BASE_URL') ?: 'https://api.deepseek.com'),
+            'model' => (string) (getenv('DEEPSEEK_MODEL') ?: 'deepseek-chat'),
+            'max_tokens' => 4000,
+            'timeout' => 300,
+        ],
+    ];
+}
+
+/**
+ * Собирает итоговый реестр: встроенные провайдеры + пользовательские.
+ * Устаревшие ключи deepseek_* применяются к deepseek как значения по умолчанию,
+ * поэтому config.php старого формата продолжает работать.
+ *
+ * @param array<string, mixed> $cfg
+ * @return array<string, array<string, mixed>>
+ */
+function resolve_providers(array $cfg): array
+{
+    $providers = default_providers();
+
+    $legacy = [
+        'api_key' => 'deepseek_api_key',
+        'base_url' => 'deepseek_base_url',
+        'model' => 'deepseek_model',
+        'max_tokens' => 'deepseek_max_tokens',
+        'timeout' => 'deepseek_timeout',
+    ];
+    foreach ($legacy as $field => $key) {
+        $value = $cfg[$key] ?? null;
+        if ($value !== null && $value !== '') {
+            $providers['deepseek'][$field] = $value;
+        }
     }
 
-    $url = rtrim((string) $cfg['deepseek_base_url'], '/') . '/chat/completions';
+    $custom = $cfg['providers'] ?? [];
+    foreach (is_array($custom) ? $custom : [] as $name => $provider) {
+        if (!is_array($provider)) {
+            continue;
+        }
+        $name = (string) $name;
+        $providers[$name] = array_merge(
+            $providers[$name] ?? [
+                'driver' => 'openai_compatible',
+                'label' => $name,
+                'api_key' => '',
+                'base_url' => '',
+                'model' => '',
+                'max_tokens' => 4000,
+                'timeout' => 300,
+            ],
+            $provider
+        );
+    }
+
+    return $providers;
+}
+
+/**
+ * Драйверы (протоколы) общения с API модели.
+ * Сигнатура драйвера: fn(array $provider, string $system, string $user): string.
+ *
+ * Для API с несовместимым протоколом (например, Anthropic Messages API)
+ * добавьте сюда запись и функцию рядом с llm_openai_compatible().
+ *
+ * @return array<string, string>
+ */
+function llm_drivers(): array
+{
+    return [
+        'openai_compatible' => 'llm_openai_compatible',
+    ];
+}
+
+/**
+ * Настройки выбранного провайдера с проверкой обязательных полей.
+ *
+ * @param array<string, mixed> $cfg
+ * @return array{name:string, label:string, driver:string, api_key:string, base_url:string, model:string, max_tokens:int, timeout:int, temperature:float, require_api_key:bool}
+ */
+function active_provider(array $cfg, ?string $name = null): array
+{
+    $name = $name ?? (string) ($cfg['ai_provider'] ?? 'deepseek');
+    $providers = is_array($cfg['providers'] ?? null) ? $cfg['providers'] : [];
+
+    if (!isset($providers[$name]) || !is_array($providers[$name])) {
+        throw new RuntimeException(sprintf(
+            'Провайдер "%s" не настроен. Доступны: %s',
+            $name,
+            implode(', ', array_keys($providers)) ?: '(ни одного)'
+        ));
+    }
+
+    $p = $providers[$name];
+    $driver = (string) ($p['driver'] ?? 'openai_compatible');
+    $drivers = llm_drivers();
+    if (!isset($drivers[$driver])) {
+        throw new RuntimeException(sprintf(
+            'У провайдера "%s" неизвестный driver "%s". Доступны: %s',
+            $name,
+            $driver,
+            implode(', ', array_keys($drivers))
+        ));
+    }
+
+    $baseUrl = trim((string) ($p['base_url'] ?? ''));
+    $model = trim((string) ($p['model'] ?? ''));
+    if ($baseUrl === '') {
+        throw new RuntimeException(sprintf('У провайдера "%s" не задан base_url', $name));
+    }
+    if ($model === '') {
+        throw new RuntimeException(sprintf('У провайдера "%s" не задан model', $name));
+    }
+
+    $apiKey = (string) ($p['api_key'] ?? '');
+    $requireKey = (bool) ($p['require_api_key'] ?? true);
+    if ($apiKey === '' && $requireKey) {
+        throw new RuntimeException(sprintf('У провайдера "%s" не задан api_key', $name));
+    }
+
+    $label = (string) ($p['label'] ?? '');
+
+    return [
+        'name' => $name,
+        'label' => $label !== '' ? $label : $name,
+        'driver' => $driver,
+        'api_key' => $apiKey,
+        'base_url' => rtrim($baseUrl, '/'),
+        'model' => $model,
+        'max_tokens' => max(1, (int) ($p['max_tokens'] ?? 4000)),
+        'timeout' => max(1, (int) ($p['timeout'] ?? 300)),
+        'temperature' => (float) ($p['temperature'] ?? 0.2),
+        'require_api_key' => $requireKey,
+    ];
+}
+
+/**
+ * Имя провайдера для текста комментария. В отличие от active_provider()
+ * не проверяет настройки: используется, когда запрос ещё не отправлялся.
+ *
+ * @param array<string, mixed> $cfg
+ */
+function provider_label(array $cfg, ?string $name = null): string
+{
+    $name = $name ?? (string) ($cfg['ai_provider'] ?? 'deepseek');
+    $provider = $cfg['providers'][$name] ?? null;
+    $label = is_array($provider) ? (string) ($provider['label'] ?? '') : '';
+
+    return $label !== '' ? $label : $name;
+}
+
+/**
+ * OpenAI-совместимый транспорт: POST {base_url}/chat/completions.
+ * Так работают DeepSeek, OpenAI, OpenRouter, Ollama, vLLM и большинство шлюзов.
+ *
+ * @param array<string, mixed> $provider
+ */
+function llm_openai_compatible(array $provider, string $system, string $user): string
+{
+    $url = (string) $provider['base_url'];
+    if (!preg_match('#/chat/completions/?$#', $url)) {
+        $url = rtrim($url, '/') . '/chat/completions';
+    }
+
     $payload = [
-        'model' => (string) $cfg['deepseek_model'],
+        'model' => (string) $provider['model'],
         'messages' => [
             ['role' => 'system', 'content' => $system],
             ['role' => 'user', 'content' => $user],
         ],
-        'temperature' => 0.2,
-        'max_tokens' => (int) $cfg['deepseek_max_tokens'],
+        'temperature' => (float) $provider['temperature'],
+        'max_tokens' => (int) $provider['max_tokens'],
         'stream' => false,
     ];
 
@@ -532,10 +732,12 @@ function ask_deepseek(array $cfg, string $system, string $user): string
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
     );
 
-    [$code, $raw] = http_request('POST', $url, [
-        'Authorization: Bearer ' . $cfg['deepseek_api_key'],
-        'Content-Type: application/json',
-    ], $body, (int) $cfg['deepseek_timeout']);
+    $headers = ['Content-Type: application/json'];
+    if ((string) $provider['api_key'] !== '') {
+        $headers[] = 'Authorization: Bearer ' . $provider['api_key'];
+    }
+
+    [$code, $raw] = http_request('POST', $url, $headers, (string) $body, (int) $provider['timeout']);
 
     $data = json_decode($raw, true);
 
@@ -543,25 +745,68 @@ function ask_deepseek(array $cfg, string $system, string $user): string
         $message = is_array($data)
             ? (string) ($data['error']['message'] ?? $raw)
             : $raw;
-        throw new RuntimeException(sprintf('DeepSeek HTTP %d: %s', $code, mb_substr($message, 0, 500)));
+        throw new RuntimeException(sprintf(
+            '%s HTTP %d: %s',
+            (string) $provider['label'],
+            $code,
+            mb_substr($message, 0, 500)
+        ));
     }
 
     $content = $data['choices'][0]['message']['content'] ?? null;
+
+    // Некоторые провайдеры отдают content массивом частей.
+    if (is_array($content)) {
+        $parts = [];
+        foreach ($content as $part) {
+            if (is_string($part)) {
+                $parts[] = $part;
+            } elseif (is_array($part) && is_string($part['text'] ?? null)) {
+                $parts[] = $part['text'];
+            }
+        }
+        $content = implode('', $parts);
+    }
+
     if (!is_string($content) || trim($content) === '') {
-        throw new RuntimeException('DeepSeek вернул пустой ответ');
+        throw new RuntimeException((string) $provider['label'] . ' вернул пустой ответ');
     }
 
     return trim($content);
 }
 
-function render_note(array $cfg, array $mr, string $review, string $trigger): string
+/**
+ * Отправить промпт выбранному провайдеру.
+ * $providerName переопределяет 'ai_provider' на один вызов (CLI --provider).
+ *
+ * @param array<string, mixed> $cfg
+ */
+function ask_llm(array $cfg, string $system, string $user, ?string $providerName = null): string
+{
+    $provider = active_provider($cfg, $providerName);
+    $drivers = llm_drivers();
+    $driver = $drivers[$provider['driver']];
+
+    return $driver($provider, $system, $user);
+}
+
+/**
+ * @param array<string, mixed> $provider
+ */
+function render_note(array $cfg, array $mr, string $review, string $trigger, array $provider): string
 {
     $sha = (string) ($mr['sha'] ?? '');
     $shaShort = $sha !== '' ? substr($sha, 0, 8) : '?';
 
     return implode("\n", [
-        '### 🤖 DeepSeek review',
-        sprintf('<sub>триггер: %s · коммит `%s` · %s</sub>', $trigger, $shaShort, date('Y-m-d H:i')),
+        '### 🤖 ' . $provider['label'] . ' review',
+        sprintf(
+            '<sub>триггер: %s · модель `%s` · коммит `%s` · %s</sub>',
+            $trigger,
+            $provider['model'],
+            $shaShort,
+            date('Y-m-d H:i')
+        ),
         '',
         $review,
         '',
@@ -605,10 +850,13 @@ function upsert_note(array $cfg, int $projectId, int $iid, string $body): void
 }
 
 /**
- * Полное ревью: забрать MR и diff из GitLab, спросить DeepSeek, опубликовать комментарий.
+ * Полное ревью: забрать MR и diff из GitLab, спросить модель, опубликовать комментарий.
+ * $providerName переопределяет 'ai_provider' на один прогон.
  */
-function review_now(array $cfg, int $projectId, int $iid, string $trigger): string
+function review_now(array $cfg, int $projectId, int $iid, string $trigger, ?string $providerName = null): string
 {
+    $provider = active_provider($cfg, $providerName);
+
     $mr = gitlab_get($cfg, sprintf('/projects/%d/merge_requests/%d', $projectId, $iid));
     if ($mr === []) {
         throw new RuntimeException(sprintf('MR не найден: project=%d mr=!%d', $projectId, $iid));
@@ -626,7 +874,7 @@ function review_now(array $cfg, int $projectId, int $iid, string $trigger): stri
     if ((bool) $cfg['require_description'] && $task === '') {
         if ((bool) $cfg['post_note']) {
             upsert_note($cfg, $projectId, $iid, implode("\n", [
-                '### 🤖 DeepSeek review',
+                '### 🤖 ' . $provider['label'] . ' review',
                 '',
                 'В описании MR нет текста задачи — проверять нечего. Добавьте описание, ревью придёт при следующем коммите.',
                 '',
@@ -641,16 +889,18 @@ function review_now(array $cfg, int $projectId, int $iid, string $trigger): stri
     [$system, $user] = build_prompt($cfg, $mr, $diffs);
 
     log_line($cfg, sprintf(
-        'deepseek request mr=!%d files=%d prompt=%d chars',
+        'llm request provider=%s model=%s mr=!%d files=%d prompt=%d chars',
+        $provider['name'],
+        $provider['model'],
         $iid,
         count($diffs),
         mb_strlen($user)
     ));
 
-    $review = ask_deepseek($cfg, $system, $user);
+    $review = ask_llm($cfg, $system, $user, $provider['name']);
 
     if ((bool) $cfg['post_note']) {
-        upsert_note($cfg, $projectId, $iid, render_note($cfg, $mr, $review, $trigger));
+        upsert_note($cfg, $projectId, $iid, render_note($cfg, $mr, $review, $trigger, $provider));
     }
 
     return 'ok: ' . mb_strlen($review) . ' символов ревью';
@@ -726,14 +976,19 @@ function handle_webhook(array $cfg): void
     set_time_limit(0);
 
     try {
-        log_line($cfg, sprintf('review start mr=!%d trigger=%s', $iid, $reason));
+        log_line($cfg, sprintf(
+            'review start mr=!%d trigger=%s provider=%s',
+            $iid,
+            $reason,
+            provider_label($cfg)
+        ));
         log_line($cfg, 'review done ' . review_now($cfg, $projectId, $iid, $reason));
     } catch (Throwable $e) {
         log_line($cfg, 'ERROR ' . $e->getMessage());
         if ((bool) $cfg['post_note']) {
             try {
                 upsert_note($cfg, $projectId, $iid, implode("\n", [
-                    '### 🤖 DeepSeek review',
+                    '### 🤖 ' . provider_label($cfg) . ' review',
                     '',
                     'Не удалось получить ревью: `' . $e->getMessage() . '`',
                     '',
@@ -752,15 +1007,70 @@ function cli_usage(): string
 {
     return <<<'TXT'
 Использование:
-  php gitlab-mr-review.php --project=42 --mr=17
-      Принудительно проверить MR (нужны gitlab_token и deepseek_api_key).
+  php gitlab-mr-review.php --project=42 --mr=17 [--provider=openai]
+      Принудительно проверить MR (нужны gitlab_token и api_key провайдера).
 
   php gitlab-mr-review.php --payload=examples/mr-open.json [--diffs=examples/diffs.json] --dry-run
       Прогнать решение по сохранённому payload и напечатать промпт. Без сети.
 
+  php gitlab-mr-review.php --list-providers
+      Показать настроенных провайдеров и выбранного по умолчанию.
+
   php gitlab-mr-review.php --help
 
+Провайдер: 'ai_provider' в config.php или --provider=имя. Сейчас из коробки
+настроен только DeepSeek, остальные добавляются в 'providers' (config.php).
+
 TXT;
+}
+
+/**
+ * Краткое описание выбранного провайдера для dry-run и логов.
+ *
+ * @param array<string, mixed> $cfg
+ */
+function provider_brief(array $cfg, ?string $name = null): string
+{
+    $name = $name ?? (string) ($cfg['ai_provider'] ?? 'deepseek');
+    $provider = $cfg['providers'][$name] ?? null;
+    $model = is_array($provider) ? (string) ($provider['model'] ?? '') : '';
+
+    return sprintf(
+        'provider=%s (%s%s)',
+        $name,
+        provider_label($cfg, $name),
+        $model !== '' ? ', ' . $model : ''
+    );
+}
+
+/**
+ * @param array<string, mixed> $cfg
+ */
+function providers_report(array $cfg): string
+{
+    $active = (string) ($cfg['ai_provider'] ?? 'deepseek');
+    $lines = ['Провайдеры (активный помечен *):'];
+
+    foreach (is_array($cfg['providers'] ?? null) ? $cfg['providers'] : [] as $name => $provider) {
+        if (!is_array($provider)) {
+            continue;
+        }
+        $key = (string) ($provider['api_key'] ?? '');
+        $lines[] = sprintf(
+            '%s %-12s driver=%-17s model=%-22s base_url=%-38s key=%s',
+            (string) $name === $active ? '*' : ' ',
+            (string) $name,
+            (string) ($provider['driver'] ?? 'openai_compatible'),
+            (string) ($provider['model'] ?? '?'),
+            (string) ($provider['base_url'] ?? '?'),
+            $key === '' ? 'нет' : 'задан'
+        );
+    }
+
+    $lines[] = '';
+    $lines[] = 'Выбрать другого: --provider=имя или ai_provider в config.php.';
+
+    return implode("\n", $lines);
 }
 
 function cli_main(array $argv, array $cfg): int
@@ -781,6 +1091,21 @@ function cli_main(array $argv, array $cfg): int
     }
 
     $dryRun = isset($opts['dry-run']);
+    $providerName = isset($opts['provider']) && $opts['provider'] !== '1' && trim($opts['provider']) !== ''
+        ? trim($opts['provider'])
+        : null;
+
+    if (isset($opts['list-providers'])) {
+        echo providers_report($cfg), "\n";
+        try {
+            $provider = active_provider($cfg);
+            printf("Активный: %s (%s)\n", $provider['label'], $provider['name']);
+        } catch (RuntimeException $e) {
+            fwrite(STDERR, 'Внимание: ' . $e->getMessage() . "\n");
+        }
+
+        return 0;
+    }
 
     if (isset($opts['payload'])) {
         $json = @file_get_contents($opts['payload']);
@@ -792,7 +1117,7 @@ function cli_main(array $argv, array $cfg): int
         }
 
         [$run, $reason] = decide($payload, $cfg);
-        printf("run=%s reason=%s\n", $run ? 'yes' : 'no', $reason);
+        printf("run=%s reason=%s %s\n", $run ? 'yes' : 'no', $reason, provider_brief($cfg, $providerName));
 
         if (!$run) {
             return 0;
@@ -816,7 +1141,7 @@ function cli_main(array $argv, array $cfg): int
 
         $projectId = (int) ($payload['project']['id'] ?? 0);
         $iid = (int) ($payload['object_attributes']['iid'] ?? 0);
-        echo review_now($cfg, $projectId, $iid, $reason), "\n";
+        echo review_now($cfg, $projectId, $iid, $reason, $providerName), "\n";
 
         return 0;
     }
@@ -825,11 +1150,11 @@ function cli_main(array $argv, array $cfg): int
         $projectId = (int) $opts['project'];
         $iid = (int) $opts['mr'];
         if ($dryRun) {
-            echo "dry-run: сетевые запросы пропущены\n";
+            echo 'dry-run: сетевые запросы пропущены, ', provider_brief($cfg, $providerName), "\n";
 
             return 0;
         }
-        echo review_now($cfg, $projectId, $iid, 'manual'), "\n";
+        echo review_now($cfg, $projectId, $iid, 'manual', $providerName), "\n";
 
         return 0;
     }
@@ -842,7 +1167,12 @@ function cli_main(array $argv, array $cfg): int
 // ================================= DISPATCH ================================
 
 if (PHP_SAPI === 'cli') {
-    exit(cli_main($argv, $CONFIG));
+    try {
+        exit(cli_main($argv, $CONFIG));
+    } catch (RuntimeException $e) {
+        fwrite(STDERR, 'Ошибка: ' . $e->getMessage() . "\n");
+        exit(2);
+    }
 }
 
 handle_webhook($CONFIG);
