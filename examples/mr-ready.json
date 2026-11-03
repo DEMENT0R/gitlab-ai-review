@@ -1,0 +1,35 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {"id": 7, "username": "ivan", "name": "Иван Петров"},
+  "project": {
+    "id": 42,
+    "name": "shop",
+    "path_with_namespace": "team/shop",
+    "web_url": "https://gitlab.example.com/team/shop"
+  },
+  "object_attributes": {
+    "id": 999,
+    "iid": 18,
+    "action": "update",
+    "state": "opened",
+    "target_branch": "main",
+    "source_branch": "feature/cart-discount-wip",
+    "title": "Скидка на корзину при промокоде",
+    "description": "## Задача\n\nЕсли в корзине больше 3 товаров и введён валидный промокод, применять скидку 10%.",
+    "url": "https://gitlab.example.com/team/shop/-/merge_requests/18",
+    "draft": false,
+    "work_in_progress": false,
+    "created_at": "2026-11-03 06:20:00 UTC",
+    "updated_at": "2026-11-03 07:10:00 UTC"
+  },
+  "labels": [],
+  "changes": {
+    "draft": {"previous": true, "current": false},
+    "work_in_progress": {"previous": true, "current": false},
+    "title": {
+      "previous": "Draft: Скидка на корзину при промокоде",
+      "current": "Скидка на корзину при промокоде"
+    }
+  }
+}

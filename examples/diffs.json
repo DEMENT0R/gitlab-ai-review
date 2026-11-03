@@ -1,0 +1,18 @@
+[
+  {
+    "old_path": "src/Cart/PromoCodeApplier.php",
+    "new_path": "src/Cart/PromoCodeApplier.php",
+    "new_file": true,
+    "renamed_file": false,
+    "deleted_file": false,
+    "diff": "@@ -0,0 +1,38 @@\n+<?php\n+declare(strict_types=1);\n+\n+namespace App\\Cart;\n+\n+final class PromoCodeApplier\n+{\n+    private const DISCOUNT = 0.10;\n+\n+    public function apply(array $cart, ?string $promoCode, PromoCodeRepository $repo): array\n+    {\n+        if ($promoCode === null) {\n+            return $cart;\n+        }\n+\n+        if (count($cart['items']) <= 3) {\n+            return $cart;\n+        }\n+\n+        $promo = $repo->findByCode($promoCode);\n+        if ($promo === null) {\n+            return $cart;\n+        }\n+\n+        $total = 0.0;\n+        foreach ($cart['items'] as $item) {\n+            $total += $item['price'] * $item['qty'];\n+        }\n+\n+        $cart['total'] = $total * (1 - self::DISCOUNT);\n+\n+        return $cart;\n+    }\n+}\n"
+  },
+  {
+    "old_path": "src/Http/CheckoutController.php",
+    "new_path": "src/Http/CheckoutController.php",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "diff": "@@ -24,6 +24,12 @@ final class CheckoutController\n     public function checkout(Request $request): Response\n     {\n+        $cart = $this->applier->apply(\n+            $request->get('cart'),\n+            $request->get('promo_code'),\n+            $this->promoCodes\n+        );\n+\n         return $this->render('checkout', ['cart' => $cart]);\n     }\n"
+  }
+]

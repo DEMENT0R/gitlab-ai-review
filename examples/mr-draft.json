@@ -1,0 +1,28 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {"id": 7, "username": "ivan", "name": "Иван Петров"},
+  "project": {
+    "id": 42,
+    "name": "shop",
+    "path_with_namespace": "team/shop",
+    "web_url": "https://gitlab.example.com/team/shop"
+  },
+  "object_attributes": {
+    "id": 999,
+    "iid": 18,
+    "action": "open",
+    "state": "opened",
+    "target_branch": "main",
+    "source_branch": "feature/cart-discount-wip",
+    "title": "Draft: Скидка на корзину при промокоде",
+    "description": "черновик, ещё не готово",
+    "url": "https://gitlab.example.com/team/shop/-/merge_requests/18",
+    "draft": true,
+    "work_in_progress": true,
+    "created_at": "2026-11-03 06:20:00 UTC",
+    "updated_at": "2026-11-03 06:20:00 UTC"
+  },
+  "labels": [],
+  "changes": {}
+}

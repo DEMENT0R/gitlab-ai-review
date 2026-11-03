@@ -1,0 +1,38 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {"id": 7, "username": "ivan", "name": "Иван Петров"},
+  "project": {
+    "id": 42,
+    "name": "shop",
+    "path_with_namespace": "team/shop",
+    "web_url": "https://gitlab.example.com/team/shop"
+  },
+  "object_attributes": {
+    "id": 998,
+    "iid": 17,
+    "action": "update",
+    "state": "opened",
+    "target_branch": "main",
+    "source_branch": "feature/cart-discount",
+    "title": "Скидка на корзину при промокоде",
+    "description": "## Задача\n\nЕсли в корзине больше 3 товаров и введён валидный промокод, применять скидку 10%.",
+    "url": "https://gitlab.example.com/team/shop/-/merge_requests/17",
+    "draft": false,
+    "work_in_progress": false,
+    "oldrev": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+    "created_at": "2026-11-03 06:12:01 UTC",
+    "updated_at": "2026-11-03 07:02:10 UTC"
+  },
+  "labels": [],
+  "changes": {
+    "oldrev": {
+      "previous": null,
+      "current": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+    },
+    "updated_at": {
+      "previous": "2026-11-03 06:12:01 UTC",
+      "current": "2026-11-03 07:02:10 UTC"
+    }
+  }
+}

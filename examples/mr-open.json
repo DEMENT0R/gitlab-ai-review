@@ -1,0 +1,50 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {"id": 7, "username": "ivan", "name": "Иван Петров", "email": "ivan@example.com"},
+  "project": {
+    "id": 42,
+    "name": "shop",
+    "path_with_namespace": "team/shop",
+    "web_url": "https://gitlab.example.com/team/shop",
+    "git_http_url": "https://gitlab.example.com/team/shop.git",
+    "default_branch": "main"
+  },
+  "repository": {
+    "name": "shop",
+    "url": "git@gitlab.example.com:team/shop.git",
+    "description": "",
+    "homepage": "https://gitlab.example.com/team/shop"
+  },
+  "object_attributes": {
+    "id": 998,
+    "iid": 17,
+    "action": "open",
+    "state": "opened",
+    "target_branch": "main",
+    "source_branch": "feature/cart-discount",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "title": "Скидка на корзину при промокоде",
+    "description": "## Задача\n\nЕсли в корзине больше 3 товаров и введён валидный промокод, применять скидку 10%.\nСкидка не суммируется с другими акциями, не применяется к товарам со скидкой.\n\n## Критерии приёмки\n- скидка считается от суммы без учёта доставки;\n- при невалидном промокоде корзина не меняется;\n- есть unit-тесты на расчёт.",
+    "url": "https://gitlab.example.com/team/shop/-/merge_requests/17",
+    "draft": false,
+    "work_in_progress": false,
+    "detailed_merge_status": "unchecked",
+    "assignee_ids": [5],
+    "reviewer_ids": [9],
+    "created_at": "2026-11-03 06:12:01 UTC",
+    "updated_at": "2026-11-03 06:12:01 UTC",
+    "last_commit": {
+      "id": "9f2c1ab77d0e4f5a8b6c3d2e1f0099aa11bb22cc",
+      "message": "feat(cart): apply promo discount",
+      "timestamp": "2026-11-03T06:11:40Z",
+      "url": "https://gitlab.example.com/team/shop/-/commit/9f2c1ab7",
+      "author": {"name": "Иван Петров", "email": "ivan@example.com"}
+    }
+  },
+  "labels": [{"id": 3, "title": "backend", "color": "#1f75cb", "project_id": 42}],
+  "changes": {},
+  "assignees": [],
+  "reviewers": []
+}
